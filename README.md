@@ -1,6 +1,6 @@
 # SA-SOT
 
-In progress
+In progress.
 
 ## Description
 
