@@ -1,6 +1,6 @@
 # SA-SOT
 
-Speech-to-Text project repository.
+In progress
 
 ## Description
 
