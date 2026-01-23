@@ -1,0 +1,109 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# PyTorch
+*.pth
+*.pt
+*.ckpt
+*.pkl
+*.h5
+
+# Logs
+*.log
+*.out
+*.err
+
+# Data files (large datasets)
+# Manifest files (generated from prepare_manifest.py)
+# Only ignore generated manifests, keep source code
+data/manifests/*.json
+!data/manifests/.gitkeep
+
+# LibriSpeechMix evaluation dataset (generated from prepare_librispeechmix.py)
+data/librispeechmix/
+!data/librispeechmix/.gitkeep
+
+# Alignment files (generated from prepare_torchaudio_alignment.py)
+data/alignments/
+!data/alignments/.gitkeep
+
+# Tokenizer models (generated from train_bpe_tokenizer.py)
+data/tokenizer/*.model
+data/tokenizer/*.vocab
+!data/tokenizer/.gitkeep
+
+# Checkpoints and experiments
+checkpoints/
+exp/
+runs/
+wandb/
+tensorboard/
+
+# Temporary files
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+.DS_Store
+.vscode/
+.idea/
+*.ipynb_checkpoints
+
+# Environment
+.env
+.venv
+venv/
+ENV/
+env/
+conda-meta/
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Documents (papers, PDFs)
+# Only ignore PDFs in root and papers directories, not in docs/ (which might contain markdown)
+*.pdf
+*.PDF
+papers/
+paper/
+references/
+# Don't ignore docs/ entirely, as it might contain markdown documentation
+
+# Project specific
+temp_*.json
+*_100_samples*
+eval_*.log
+train_*.log
+run_*.log
+

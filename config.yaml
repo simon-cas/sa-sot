@@ -1,0 +1,74 @@
+# SA-SOT Training Configuration
+
+# Model parameters
+model:
+  vocab_size: 3730
+  num_speakers: 2341
+  asr_dim: 512
+  spk_dim: 512
+  cif_beta: 1.0
+
+# Training parameters
+training:
+  batch_size: 8
+  num_epochs: 1
+  learning_rate: 1.0e-4
+  num_workers: 4
+  save_dir: "./checkpoints"
+  save_interval: 2
+  gradient_clip: 1.0
+  
+  # Loss weights
+  asr_loss_weight: 1.0
+  speaker_loss_weight: 0.1
+
+# Data parameters
+data:
+  librispeech_root: "/data/work/SimonFang/datasets/english/LibriSpeech"
+  
+  # Manifest files
+  train_manifest: "./data/manifests/train_manifest.json"
+  dev_manifest: "./data/manifests/dev_manifest.json"
+  test_manifest: "./data/manifests/test_manifest.json"
+
+  # Audio processing
+  sample_rate: 16000
+  n_mels: 80
+  hop_length: 160
+  win_length: 400
+  n_fft: 512
+  
+  # Multi-speaker mixing (on-the-fly)
+  mix_prob: 0.5  # Probability of mixing multiple speakers
+  max_speakers: 2  # Maximum number of speakers in a mix (Paper only supports 2 speakers)
+  overlap_ratio: 0.5  # Overlap ratio for mixed speech (0.0-1.0) - Paper uses 0.5
+  truly_on_the_fly: true  # If true, random mixing each epoch (recommended for paper reproduction).
+                          # If false, use pre-generated mix configurations for reproducibility.
+  
+  # Data filtering
+  min_duration: 1.0  # Minimum audio duration in seconds
+  max_duration: 30.0  # Maximum audio duration in seconds
+
+# Tokenizer
+tokenizer:
+  model_path: "./data/tokenizer/bpe_tokenizer.model"  # Path to SentencePiece BPE model
+  vocab_size: 3730  # Should match model vocab_size
+  mask_id: 0  # <mask> token ID (will be set from tokenizer)
+  cc_id: 3  # <cc> token ID (will be set from tokenizer)
+  
+# Forced Alignment (using PyTorch Audio)
+alignment:
+  word_alignments_path: "./data/alignments/word_alignments.json"  # Word emission times from forced alignment
+  use_alignment: true  # Whether to use word emission times for training
+
+# Evaluation dataset (LibriSpeechMix)
+evaluation:
+  librispeechmix_root: "./data/librispeechmix"
+  manifest_files:
+    - "dev-clean-1mix.jsonl"
+    - "dev-clean-2mix.jsonl"
+    - "dev-clean-3mix.jsonl"
+    - "test-clean-1mix.jsonl"
+    - "test-clean-2mix.jsonl"
+    - "test-clean-3mix.jsonl"
+

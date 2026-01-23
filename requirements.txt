@@ -1,0 +1,28 @@
+# SA-SOT Requirements
+# Python 3.8+
+
+# Core dependencies
+torch>=2.0.0
+torchaudio>=2.0.0
+
+# Tokenization
+sentencepiece>=0.1.99
+
+# Audio processing
+soundfile>=0.12.1
+librosa>=0.10.0
+sox>=1.4.1
+
+# Configuration
+PyYAML>=6.0
+
+# Evaluation
+jiwer>=3.0.0
+editdistance>=0.6.2
+
+# Progress bars
+tqdm>=4.65.0
+
+# NumPy (usually comes with PyTorch, but listed for completeness)
+numpy>=1.24.0
+
