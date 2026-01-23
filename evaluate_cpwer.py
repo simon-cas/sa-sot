@@ -13,36 +13,54 @@ import argparse
 from pathlib import Path
 from tqdm import tqdm
 import editdistance
+from itertools import permutations
 
 
-def compute_cpwer(ref, hyp):
+def compute_cpwer(ref_texts, hyp_texts):
     """
-    Compute Character-level Word Error Rate (cpWER)
+    Compute Character-level Word Error Rate (cpWER) for multi-speaker ASR
+    
+    The cpWER is computed as follows:
+    1. Concatenate all utterances of each speaker for both reference and hypothesis
+    2. Compute the WER between the reference and all possible speaker permutations of the hypothesis
+    3. Pick the lowest WER among them (best permutation)
     
     Args:
-        ref: Reference text (string)
-        hyp: Hypothesis text (string)
+        ref_texts: List of reference texts, one per speaker
+        hyp_texts: List of hypothesis texts, one per speaker
     
     Returns:
         cpwer: Character-level WER (float)
     """
-    # Remove spaces and convert to lowercase for character-level comparison
-    ref_chars = ref.replace(' ', '').lower()
-    hyp_chars = hyp.replace(' ', '').lower()
+    # Step 1: Concatenate all utterances of each speaker
+    ref_concatenated = ' '.join(ref_texts).lower()
+    hyp_concatenated = ' '.join(hyp_texts).lower()
     
-    if len(ref_chars) == 0:
-        if len(hyp_chars) == 0:
+    if len(ref_concatenated) == 0:
+        if len(hyp_concatenated) == 0:
             return 0.0
         else:
             return 1.0
     
-    # Compute character-level edit distance
-    edit_dist = editdistance.eval(ref_chars, hyp_chars)
+    # Step 2: Compute WER for all possible speaker permutations
+    # Step 3: Pick the lowest WER
+    num_speakers = len(ref_texts)
+    min_cpwer = float('inf')
     
-    # cpWER = edit_distance / reference_length
-    cpwer = edit_dist / len(ref_chars)
+    # Generate all permutations of hypothesis speaker indices
+    for perm in permutations(range(num_speakers)):
+        # Reorder hypothesis texts according to permutation
+        permuted_hyp_texts = [hyp_texts[i] for i in perm]
+        hyp_permuted = ' '.join(permuted_hyp_texts).lower()
+        
+        # Compute character-level edit distance
+        edit_dist = editdistance.eval(ref_concatenated, hyp_permuted)
+        
+        # cpWER = edit_distance / reference_length
+        cpwer = edit_dist / len(ref_concatenated)
+        min_cpwer = min(min_cpwer, cpwer)
     
-    return cpwer
+    return min_cpwer
 
 
 def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
@@ -164,28 +182,34 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 
                 token_preds = token_logits.argmax(dim=-1)  # (B, N)
                 
-                # Convert tokens to text
+                # Parse tokens to extract speaker segments
+                # In t-SOT format: [spk1_tokens] <cc> [spk2_tokens] <cc> ...
+                # We need to split by <cc> tokens at token level, not by spaces in text
                 pred_tokens = token_preds[0].cpu().tolist()
-                
-                # Filter out special tokens (pad, bos, eos, mask, cc)
-                # Keep cc_id for t-SOT format but convert to space for cpWER
-                filtered_tokens = []
+                pred_segments = []
+                current_segment_tokens = []
                 cc_id = model.cc_id
+                
                 for tok_id in pred_tokens:
                     if tok_id == tokenizer.pad_id or tok_id == tokenizer.bos_id or tok_id == tokenizer.eos_id:
                         continue
                     elif tok_id == tokenizer.mask_id:
                         continue
                     elif tok_id == cc_id:
-                        # Convert <cc> to space for cpWER calculation
-                        filtered_tokens.append(' ')
+                        # <cc> marks speaker change, decode current segment and start new one
+                        if current_segment_tokens:
+                            # Decode current segment tokens to text
+                            segment_text = ''.join([tokenizer.id_to_piece(t) for t in current_segment_tokens])
+                            pred_segments.append(segment_text.strip())
+                            current_segment_tokens = []
                     else:
-                        # Decode individual token
-                        piece = tokenizer.id_to_piece(tok_id)
-                        filtered_tokens.append(piece)
+                        # Regular token, add to current segment
+                        current_segment_tokens.append(tok_id)
                 
-                # Decode tokens to text
-                pred_text = ''.join(filtered_tokens).strip()
+                # Don't forget the last segment (if no <cc> at the end)
+                if current_segment_tokens:
+                    segment_text = ''.join([tokenizer.id_to_piece(t) for t in current_segment_tokens])
+                    pred_segments.append(segment_text.strip())
                 
                 # Get reference text from 'texts' field (LibriSpeechMix format)
                 # texts is a list of transcriptions for each speaker
@@ -198,13 +222,28 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                         if ref_text:
                             ref_texts.append(ref_text)
                 
-                # Combine reference texts (for multi-speaker, we need to handle t-SOT format)
-                # For 2-speaker mix, combine with <cc> token (represented as space for cpWER)
-                # In t-SOT format: [spk1_tokens] <cc> [spk2_tokens]
-                ref_text = ' '.join(ref_texts)  # Simple concatenation for cpWER
+                if not ref_texts:
+                    continue
                 
-                # Compute cpWER
-                cpwer = compute_cpwer(ref_text, pred_text)
+                # For cpWER with multiple speakers, we need to find the best permutation
+                # that minimizes the character-level edit distance
+                # This handles the case where model output order might differ from reference order
+                num_ref_speakers = len(ref_texts)
+                num_pred_speakers = len(pred_segments)
+                
+                # If number of speakers don't match, pad or truncate
+                if num_pred_speakers < num_ref_speakers:
+                    # Pad with empty strings
+                    pred_segments.extend([''] * (num_ref_speakers - num_pred_speakers))
+                elif num_pred_speakers > num_ref_speakers:
+                    # Truncate to match reference
+                    pred_segments = pred_segments[:num_ref_speakers]
+                
+                # Compute cpWER following the standard procedure:
+                # 1. Concatenate all utterances of each speaker (ref_texts and pred_segments are already per-speaker)
+                # 2. Compute WER for all possible speaker permutations
+                # 3. Pick the lowest WER
+                cpwer = compute_cpwer(ref_texts, pred_segments)
                 total_cpwer += cpwer
                 total_samples += 1
                 
