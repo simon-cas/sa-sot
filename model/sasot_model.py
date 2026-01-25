@@ -115,17 +115,38 @@ class SASOTModel(nn.Module):
             sat_logits = {}
 
             for b in range(B):
+                # Get actual token length for this sample
+                # Use the minimum of target_len and token_lens to ensure all tensors match
+                actual_cif_len = token_lens[b].item()
+                if target_len is not None:
+                    actual_target_len = target_len[b].item()
+                    # Use the minimum to ensure all tensors have the same length
+                    actual_len = min(actual_target_len, actual_cif_len)
+                else:
+                    actual_len = actual_cif_len
+                
+                # Ensure actual_len is valid (at least 1)
+                actual_len = max(1, actual_len)
+                
                 uniq_spks = torch.unique(speaker_ids[b])
                 for spk in uniq_spks:
-                    # build masked t-SOT input
-                    masked_prev = prev_tokens[b].clone()
-                    mask = (speaker_ids[b] != spk) & (masked_prev != self.cc_id)
+                    # build masked t-SOT input (truncate to actual length)
+                    masked_prev = prev_tokens[b, :actual_len].clone()  # (actual_len,)
+                    spk_ids_sample = speaker_ids[b, :actual_len]  # (actual_len,)
+                    mask = (spk_ids_sample != spk) & (masked_prev != self.cc_id)
                     masked_prev[mask] = self.mask_id
 
+                    # Truncate c and token_spk to actual length
+                    c_sample = c[b:b+1, :actual_len, :]  # (1, actual_len, D)
+                    token_spk_sample = token_spk[b:b+1, :actual_len, :]  # (1, actual_len, D)
+                    
+                    # Ensure masked_prev has the same length as c_sample and token_spk_sample
+                    masked_prev = masked_prev.unsqueeze(0)  # (1, actual_len)
+
                     logits = self.asr_decoder(
-                        c[b:b+1],
-                        masked_prev.unsqueeze(0),
-                        token_spk[b:b+1]
+                        c_sample,
+                        masked_prev,
+                        token_spk_sample
                     )
 
                     sat_logits[(b, int(spk))] = logits

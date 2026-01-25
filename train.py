@@ -127,15 +127,20 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
         if isinstance(asr_logits, dict):
             # SAT training mode: calculate masked loss for each speaker
             asr_losses = []
+            # Get token_lens from output to ensure length matching
+            token_lens = output.get('token_lens', target_lens)  # (B,)
+            
             for (b, spk), logits in asr_logits.items():
-                # Build mask: only calculate loss for current speaker's tokens
-                # cc_id tokens don't contribute to loss, other speakers' tokens are masked
-                batch_target = target_tokens[b:b+1]  # (1, N)
-                batch_logits = logits  # (1, N, V)
+                # Get actual length: use minimum of target_len and token_lens
+                actual_target_len = target_lens[b].item()
+                actual_token_len = token_lens[b].item()
+                actual_len = min(actual_target_len, actual_token_len)
+                actual_len = max(1, actual_len)  # Ensure at least 1
                 
-                # Create loss mask: only for current speaker's tokens
-                batch_speaker_ids = speaker_ids[b:b+1]  # (1, N)
-                batch_target_lens = target_lens[b:b+1]  # (1,)
+                # Truncate all tensors to actual_len to ensure length matching
+                batch_target = target_tokens[b:b+1, :actual_len]  # (1, actual_len)
+                batch_logits = logits  # (1, actual_len, V) - already truncated in model
+                batch_speaker_ids = speaker_ids[b:b+1, :actual_len]  # (1, actual_len)
                 
                 # mask: True for tokens belonging to current speaker (and not cc_id)
                 # Handle DDP wrapped model
@@ -143,11 +148,6 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
                 mask_id = actual_model.mask_id
                 cc_id = actual_model.cc_id
                 loss_mask = (batch_speaker_ids == spk) & (batch_target != cc_id)
-                # Also consider target_len
-                max_len = batch_target.size(1)
-                for i, length in enumerate(batch_target_lens):
-                    if length < max_len:
-                        loss_mask[i, length:] = False
                 
                 if loss_mask.any():
                     loss = masked_ce_loss(batch_logits, batch_target, loss_mask)
@@ -448,11 +448,12 @@ def main():
             
             print(f"\nEpoch {epoch} Summary:")
             print(f"  Total Loss (weighted): {avg_loss:.4f} = {asr_weight:.1f}×{avg_asr_loss:.4f} + {spk_weight:.1f}×{avg_spk_loss:.4f}")
-            print(f"  ASR Loss: {avg_asr_loss:.4f}")
-            print(f"  Speaker Loss: {avg_spk_loss:.4f}")
+            print(f"  ASR Loss: {avg_asr_loss:.4f} (weighted: {asr_weight * avg_asr_loss:.4f})")
+            print(f"  Speaker Loss: {avg_spk_loss:.4f} (weighted: {spk_weight * avg_spk_loss:.4f})")
+            print(f"  Note: Speaker loss may decrease slowly as it's an auxiliary task (weight={spk_weight})")
         
-        # Save checkpoint (only on rank 0 for distributed training)
-        if (not use_distributed or local_rank == 0) and epoch % config['training']['save_interval'] == 0:
+        # Save checkpoint every epoch (only on rank 0 for distributed training)
+        if not use_distributed or local_rank == 0:
             checkpoint_path = os.path.join(save_dir, f'checkpoint_epoch_{epoch}.pt')
             # Get model state dict (unwrap DDP if needed)
             model_state_dict = model.module.state_dict() if use_distributed else model.state_dict()
@@ -463,8 +464,7 @@ def main():
                 'loss': avg_loss,
                 'config': config,
             }, checkpoint_path)
-            if not use_distributed or local_rank == 0:
-                print(f"  Checkpoint saved: {checkpoint_path}")
+            print(f"  Checkpoint saved: {checkpoint_path}")
     
     # Save final model (only on rank 0 for distributed training)
     if not use_distributed or local_rank == 0:

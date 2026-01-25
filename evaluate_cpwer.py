@@ -148,44 +148,79 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 if token_len == 0:
                     token_len = 100  # Fallback
                 
-                # Create prev_tokens with correct length
-                prev_tokens = torch.zeros(batch_size, token_len, dtype=torch.long).to(device)
+                # ========= Autoregressive decoding =========
+                # Initialize with BOS token
+                max_decode_len = min(token_len * 2, 500)  # Allow some extra length for generation
+                pred_tokens_list = []
+                prev_tokens = torch.full((batch_size, 1), tokenizer.bos_id, dtype=torch.long).to(device)
                 
-                # Forward pass
-                output = model(feats, feat_lens, prev_tokens=prev_tokens, 
-                             target_len=token_lens, return_intermediate=True)
+                # Get speaker embeddings (token_spk) from encoder output
+                # We need to run the model once to get the intermediate outputs
+                with torch.no_grad():
+                    # First, get encoder outputs and speaker embeddings
+                    h = model.asr_encoder(feats, feat_lens)
+                    we = model.weight_estimator(h.transpose(1, 2)).transpose(1, 2)
+                    alpha = we.squeeze(-1)
+                    c, token_lens_cif, boundaries = model.cif(h, alpha, token_lens)
+                    
+                    # Get speaker embeddings
+                    spk_frame = model.spk_encoder(feats)
+                    # Use static method from model's class
+                    token_spk = type(model)._boundary_pooling(spk_frame, boundaries)
+                    
+                    # Autoregressive decoding
+                    for step in range(max_decode_len):
+                        # Get the current length of prev_tokens
+                        current_len = prev_tokens.shape[1]
+                        
+                        # Ensure token_spk has the right length to match prev_tokens
+                        # token_spk is (B, N_cif, D), we need to pad or repeat to match prev_tokens length
+                        if current_len <= token_spk.shape[1]:
+                            # Use first current_len tokens
+                            token_spk_used = token_spk[:, :current_len, :]
+                        else:
+                            # Pad with the last token_spk value
+                            padding_len = current_len - token_spk.shape[1]
+                            last_token_spk = token_spk[:, -1:, :]  # (B, 1, D)
+                            padding = last_token_spk.repeat(1, padding_len, 1)  # (B, padding_len, D)
+                            token_spk_used = torch.cat([token_spk, padding], dim=1)  # (B, current_len, D)
+                        
+                        # Forward pass with current prev_tokens
+                        asr_logits = model.asr_decoder(c, prev_tokens, token_spk_used)  # (B, N, V)
+                        
+                        # Get logits for the last position
+                        last_logits = asr_logits[:, -1, :]  # (B, V)
+                        
+                        # Greedy decoding: select token with highest probability
+                        next_token = last_logits.argmax(dim=-1)  # (B,)
+                        next_token_id = next_token[0].item()
+                        
+                        # Stop if EOS token
+                        if next_token_id == tokenizer.eos_id:
+                            break
+                        
+                        # Add to predictions
+                        pred_tokens_list.append(next_token_id)
+                        
+                        # Append to prev_tokens for next step
+                        prev_tokens = torch.cat([prev_tokens, next_token.unsqueeze(1)], dim=1)  # (B, N+1)
                 
-                # Get token predictions (greedy decoding)
-                # Output is a dict with 'asr_logits' key
-                if isinstance(output, dict):
-                    token_logits = output.get('asr_logits', output.get('token_logits'))
-                else:
-                    # If return_intermediate=False, output is directly the logits
-                    token_logits = output
-                
-                if token_logits is None:
-                    print(f"Warning: No logits found in output, skipping sample")
-                    continue
-                
-                # Handle different output formats
-                if isinstance(token_logits, dict):
-                    # SAT format - use first speaker's logits
-                    token_logits = list(token_logits.values())[0]
-                
-                # Ensure token_logits is 3D: (B, N, V)
-                if token_logits.dim() == 4:
-                    # If 4D, take first element or reshape
-                    token_logits = token_logits.squeeze(0) if token_logits.shape[0] == 1 else token_logits.view(-1, token_logits.shape[-2], token_logits.shape[-1])
-                elif token_logits.dim() == 2:
-                    # If 2D, add batch dimension
-                    token_logits = token_logits.unsqueeze(0)
-                
-                token_preds = token_logits.argmax(dim=-1)  # (B, N)
+                # Convert to tensor for compatibility with existing code
+                token_preds = torch.tensor([pred_tokens_list], dtype=torch.long).to(device)  # (1, N)
                 
                 # Parse tokens to extract speaker segments
                 # In t-SOT format: [spk1_tokens] <cc> [spk2_tokens] <cc> ...
                 # We need to split by <cc> tokens at token level, not by spaces in text
                 pred_tokens = token_preds[0].cpu().tolist()
+                
+                # Debug: print first 50 token IDs and their decoded pieces
+                if total_samples < 2:
+                    print(f"\nDebug - First 50 token IDs: {pred_tokens[:50]}")
+                    print(f"Debug - Decoded pieces:")
+                    for i, tok_id in enumerate(pred_tokens[:50]):
+                        piece = tokenizer.id_to_piece(tok_id)
+                        print(f"  [{i}] ID={tok_id}, piece='{piece}'")
+                
                 pred_segments = []
                 current_segment_tokens = []
                 cc_id = model.cc_id
@@ -198,8 +233,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                     elif tok_id == cc_id:
                         # <cc> marks speaker change, decode current segment and start new one
                         if current_segment_tokens:
-                            # Decode current segment tokens to text
-                            segment_text = ''.join([tokenizer.id_to_piece(t) for t in current_segment_tokens])
+                            # Decode current segment tokens to text (BPE -> words)
+                            segment_text = tokenizer.decode(current_segment_tokens)
                             pred_segments.append(segment_text.strip())
                             current_segment_tokens = []
                     else:
@@ -208,7 +243,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 
                 # Don't forget the last segment (if no <cc> at the end)
                 if current_segment_tokens:
-                    segment_text = ''.join([tokenizer.id_to_piece(t) for t in current_segment_tokens])
+                    # Decode current segment tokens to text (BPE -> words)
+                    segment_text = tokenizer.decode(current_segment_tokens)
                     pred_segments.append(segment_text.strip())
                 
                 # Get reference text from 'texts' field (LibriSpeechMix format)
@@ -244,8 +280,26 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 # 2. Compute WER for all possible speaker permutations
                 # 3. Pick the lowest WER
                 cpwer = compute_cpwer(ref_texts, pred_segments)
+                
+                # Debug: print first 2 samples
+                print(f"\n{'='*60}")
+                print(f"Sample {total_samples + 1}:")
+                print(f"  Reference texts ({len(ref_texts)} speakers):")
+                for i, ref in enumerate(ref_texts):
+                    print(f"    Speaker {i+1}: {ref}")
+                print(f"  Predicted segments ({len(pred_segments)} speakers):")
+                for i, pred in enumerate(pred_segments):
+                    print(f"    Speaker {i+1}: {pred}")
+                print(f"  cpWER: {cpwer:.4f} ({cpwer*100:.2f}%)")
+                print(f"{'='*60}")
+                
                 total_cpwer += cpwer
                 total_samples += 1
+                
+                # Exit after 2 samples for debugging
+                if total_samples >= 2:
+                    print(f"\nExiting after {total_samples} samples for debugging.")
+                    break
                 
             except Exception as e:
                 print(f"Error processing sample: {e}")

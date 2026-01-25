@@ -171,18 +171,16 @@ if [ ${stage} -le 7 ] && [ ${stop_stage} -ge 7 ]; then
   if [ -n "$eval_checkpoint" ]; then
     checkpoint_path="$eval_checkpoint"
   else
-    # Try to find the latest checkpoint or final model
-    if [ -f "$exp_dir/final_model.pt" ]; then
+    # Auto-detect checkpoint: use the last epoch checkpoint (highest epoch number)
+    # Find the checkpoint with the highest epoch number
+    latest_checkpoint=$(ls -t $exp_dir/checkpoint_epoch_*.pt 2>/dev/null | head -1)
+    if [ -n "$latest_checkpoint" ]; then
+      checkpoint_path="$latest_checkpoint"
+    elif [ -f "$exp_dir/final_model.pt" ]; then
       checkpoint_path="$exp_dir/final_model.pt"
     else
-      # Find the latest checkpoint
-      latest_checkpoint=$(ls -t $exp_dir/checkpoint_epoch_*.pt 2>/dev/null | head -1)
-      if [ -n "$latest_checkpoint" ]; then
-        checkpoint_path="$latest_checkpoint"
-      else
-        echo "Error: No checkpoint found. Please specify --eval-checkpoint or ensure training completed."
-        exit 1
-      fi
+      echo "Error: No checkpoint found. Please specify --eval-checkpoint or ensure training completed."
+      exit 1
     fi
   fi
   
