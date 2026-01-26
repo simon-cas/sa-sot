@@ -1,13 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from model.attention.speaker_aware_attn import SpeakerAwareAttention
 
 
 class TransformerDecoderLayer(nn.Module):
-    def __init__(self, d_model=512, nhead=8, ffn_dim=2048, dropout=0.1):
+    def __init__(self, d_model=512, nhead=8, ffn_dim=2048, dropout=0.1, use_speaker_aware=True):
         super().__init__()
-        self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
-        self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        self.use_speaker_aware = use_speaker_aware
+        if use_speaker_aware:
+            # Use speaker-aware attention for self-attention
+            self.self_attn = SpeakerAwareAttention()
+            # Still use standard attention for cross-attention (encoder-decoder)
+            self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+        else:
+            self.self_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
+            self.cross_attn = nn.MultiheadAttention(d_model, nhead, dropout=dropout)
 
         self.ffn = nn.Sequential(
             nn.Linear(d_model, ffn_dim),
@@ -21,14 +29,20 @@ class TransformerDecoderLayer(nn.Module):
         self.norm2 = nn.LayerNorm(d_model)
         self.norm3 = nn.LayerNorm(d_model)
 
-    def forward(self, x, memory):
+    def forward(self, x, memory, speaker_embed=None):
         """
         x:      (T,B,D)  token embeddings
         memory: (S,B,D)  CIF outputs
+        speaker_embed: (B, T, D) speaker embeddings for speaker-aware attention
         """
         # self-attention
         res = x
-        x, _ = self.self_attn(x, x, x)
+        if self.use_speaker_aware and speaker_embed is not None:
+            # Use speaker-aware attention
+            x = self.self_attn(x, x, x, speaker_embed)
+        else:
+            # Fallback to standard attention
+            x, _ = self.self_attn(x, x, x)
         x = self.norm1(res + x)
 
         # cross-attention
@@ -58,7 +72,8 @@ class ASRDecoder(nn.Module):
             TransformerDecoderLayer(
                 d_model=d_model,
                 nhead=8,
-                ffn_dim=2048
+                ffn_dim=2048,
+                use_speaker_aware=True  # Enable speaker-aware attention
             )
             for _ in range(num_layers)
         ])
@@ -79,11 +94,14 @@ class ASRDecoder(nn.Module):
             x = self.spk_fusion(x)
 
         # Transformer wants (T,B,D)
-        x = x.transpose(0, 1)
-        memory = c.transpose(0, 1)
+        x = x.transpose(0, 1)  # (N, B, D)
+        memory = c.transpose(0, 1)  # (N, B, D)
+        
+        # Prepare speaker_embed for speaker-aware attention: (B, N, D) -> (B, N, D)
+        # Note: speaker_embed is already (B, N, D), no need to transpose
 
         for layer in self.layers:
-            x = layer(x, memory)
+            x = layer(x, memory, speaker_embed=speaker_embed)
 
         x = x.transpose(0, 1)
         return self.output(x)

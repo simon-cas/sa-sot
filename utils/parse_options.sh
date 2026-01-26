@@ -24,6 +24,7 @@ show_usage() {
     echo "  --skip-alignment      Skip forced alignment"
     echo "  --skip-eval           Skip evaluation dataset preparation"
     echo "  --single-speaker      Train with single speaker data only"
+    echo "  --reset-training      Reset training: remove old checkpoints and start fresh"
     echo ""
 }
 
@@ -48,6 +49,10 @@ while [ $# -gt 0 ]; do
             ;;
         --single-speaker)
             single_speaker=true
+            shift
+            ;;
+        --reset-training)
+            reset_training=true
             shift
             ;;
         --help|-h)

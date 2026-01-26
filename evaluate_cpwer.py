@@ -308,7 +308,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                     vocab_size = tokenizer.get_vocab_size()
                     print(f"  <cc> token ID: {cc_id}, piece: {tokenizer.id_to_piece(cc_id) if cc_id < vocab_size else 'N/A'}")
                     cc_count = sum(1 for t in filtered_tokens if t == cc_id)
-                    print(f"  <cc> tokens found: {cc_count} ({cc_count/len(filtered_tokens)*100:.1f}% if len(filtered_tokens) > 0 else 0%)")
+                    cc_ratio = (cc_count/len(filtered_tokens)*100) if len(filtered_tokens) > 0 else 0.0
+                    print(f"  <cc> tokens found: {cc_count} ({cc_ratio:.1f}%)")
                     
                     # Print raw hypothesis (with <cc> tokens visible) for sanity check
                     raw_hyp_pieces = [tokenizer.id_to_piece(t) for t in filtered_tokens]
@@ -328,7 +329,7 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 )
                 
                 # Check for pathological case: too many <cc> tokens
-                cc_ratio = sum(1 for t in filtered_tokens if t == cc_id) / len(filtered_tokens) if len(filtered_tokens) > 0 else 0
+                cc_ratio = (sum(1 for t in filtered_tokens if t == cc_id) / len(filtered_tokens)) if len(filtered_tokens) > 0 else 0.0
                 if cc_ratio > 0.3:
                     if total_samples < 3:
                         print(f"  Warning: High <cc> ratio ({cc_ratio:.2%}), decoding may be unreliable")

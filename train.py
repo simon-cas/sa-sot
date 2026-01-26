@@ -234,6 +234,10 @@ def main():
                        help='Path to training manifest (overrides config)')
     parser.add_argument('--exp_dir', type=str, default=None,
                        help='Experiment directory (overrides config)')
+    parser.add_argument('--resume', type=str, default=None,
+                       help='Path to checkpoint to resume training from')
+    parser.add_argument('--reset', action='store_true', default=False,
+                       help='Reset training: remove old checkpoints and start fresh')
     args = parser.parse_args()
     
     # Set random seed
@@ -263,7 +267,9 @@ def main():
         if local_rank == 0:
             print(f"Using distributed training with {torch.distributed.get_world_size()} GPUs")
     else:
-        device = torch.device(config['training']['device'])
+        # Use device from config, or default to 'cuda' if available, else 'cpu'
+        device_str = config['training'].get('device', 'cuda' if torch.cuda.is_available() else 'cpu')
+        device = torch.device(device_str)
     
     # Print training info (only on rank 0 for distributed training)
     if not use_distributed or local_rank == 0:
@@ -295,6 +301,18 @@ def main():
     # Create save directory
     save_dir = config['training']['save_dir']
     os.makedirs(save_dir, exist_ok=True)
+    
+    # Handle reset option: remove old checkpoints
+    if args.reset and (not use_distributed or local_rank == 0):
+        import glob
+        old_checkpoints = glob.glob(os.path.join(save_dir, 'checkpoint_epoch_*.pt'))
+        if old_checkpoints:
+            print(f"\n⚠️  RESET MODE: Removing {len(old_checkpoints)} old checkpoints...")
+            for ckpt in old_checkpoints:
+                os.remove(ckpt)
+                print(f"  Removed: {os.path.basename(ckpt)}")
+            print("  Starting fresh training with new model architecture.\n")
+        args.resume = None  # Don't resume if resetting
     
     # Create dataset and data loader
     data_config = config['data']
@@ -401,6 +419,17 @@ def main():
     )
     model = model.to(device)
     
+    # Verify speaker-aware attention is enabled (before DDP wrapping)
+    if not use_distributed or local_rank == 0:
+        from model.decoder.asr_decoder import TransformerDecoderLayer
+        # Check if first layer uses speaker-aware attention
+        first_layer = model.asr_decoder.layers[0]
+        if hasattr(first_layer, 'use_speaker_aware') and first_layer.use_speaker_aware:
+            print("✓ Speaker-aware attention is ENABLED in decoder")
+        else:
+            print("⚠️  WARNING: Speaker-aware attention is NOT enabled!")
+        print()  # Empty line for readability
+    
     # Wrap model for distributed training if needed
     if use_distributed:
         model = torch.nn.parallel.DistributedDataParallel(
@@ -411,10 +440,44 @@ def main():
     # Print model parameter count
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    print(f"\nModel parameters: {total_params:,} (trainable: {trainable_params:,})")
+    if not use_distributed or local_rank == 0:
+        print(f"\nModel parameters: {total_params:,} (trainable: {trainable_params:,})")
     
     # Optimizer
     optimizer = optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
+    
+    # Resume from checkpoint if specified
+    start_epoch = 1
+    if args.resume and os.path.exists(args.resume):
+        if not use_distributed or local_rank == 0:
+            print(f"\n📂 Resuming training from checkpoint: {args.resume}")
+        checkpoint = torch.load(args.resume, map_location=device)
+        
+        # Load model state
+        if 'model_state_dict' in checkpoint:
+            model_state = checkpoint['model_state_dict']
+            # Handle DDP wrapping
+            if use_distributed:
+                model.module.load_state_dict(model_state)
+            else:
+                model.load_state_dict(model_state)
+        
+        # Load optimizer state
+        if 'optimizer_state_dict' in checkpoint:
+            optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        
+        # Get starting epoch
+        if 'epoch' in checkpoint:
+            start_epoch = checkpoint['epoch'] + 1
+            if not use_distributed or local_rank == 0:
+                print(f"  Resuming from epoch {start_epoch}")
+        
+        if not use_distributed or local_rank == 0:
+            print("  ✓ Checkpoint loaded successfully\n")
+    elif args.resume:
+        if not use_distributed or local_rank == 0:
+            print(f"⚠️  Warning: Resume checkpoint not found: {args.resume}")
+            print("  Starting training from scratch...\n")
     
     # Speaker loss function
     speaker_loss_fn = SpeakerAMSoftmax(
@@ -441,8 +504,10 @@ def main():
     # Training loop
     if not use_distributed or local_rank == 0:
         print("Starting training...\n")
+        if start_epoch > 1:
+            print(f"Continuing from epoch {start_epoch} to {config['training']['num_epochs']}\n")
     
-    for epoch in range(1, config['training']['num_epochs'] + 1):
+    for epoch in range(start_epoch, config['training']['num_epochs'] + 1):
         if use_distributed:
             train_sampler.set_epoch(epoch)
         

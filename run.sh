@@ -18,6 +18,7 @@ skip_alignment=false
 skip_eval=false
 single_speaker=false
 eval_checkpoint=""
+reset_training=false
 
 . utils/parse_options.sh || exit 1
 
@@ -150,14 +151,21 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
     use_mix_flag="--use_mix"
   fi
   
+  # Add --reset flag if reset_training is true
+  reset_flag=""
+  if [ "$reset_training" = "true" ]; then
+    reset_flag="--reset"
+    echo "⚠️  RESET MODE: Will remove old checkpoints and start fresh training"
+  fi
+  
   if [ $num_gpu -eq 1 ]; then
-    $PYTHON_CMD train.py --config $config $use_mix_flag \
+    $PYTHON_CMD train.py --config $config $use_mix_flag $reset_flag \
            --seed 1234 \
            --train_manifest $train_manifest \
            --exp_dir $exp_dir
   else
     # Use python -m torch.distributed.run instead of torchrun for better compatibility
-    $PYTHON_CMD -m torch.distributed.run --nproc_per_node=$num_gpu train.py --config $config $use_mix_flag \
+    $PYTHON_CMD -m torch.distributed.run --nproc_per_node=$num_gpu train.py --config $config $use_mix_flag $reset_flag \
              --seed 1234 \
              --train_manifest $train_manifest \
              --exp_dir $exp_dir
