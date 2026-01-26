@@ -423,9 +423,24 @@ def main():
     )
     speaker_loss_fn = speaker_loss_fn.to(device)
     
+    # Save initial checkpoint (epoch 0) before training starts
+    if not use_distributed or local_rank == 0:
+        print("\nSaving initial checkpoint (epoch 0)...")
+        checkpoint_path = os.path.join(save_dir, 'checkpoint_epoch_0.pt')
+        # Get model state dict (unwrap DDP if needed)
+        model_state_dict = model.module.state_dict() if use_distributed else model.state_dict()
+        torch.save({
+            'epoch': 0,
+            'model_state_dict': model_state_dict,
+            'optimizer_state_dict': optimizer.state_dict(),
+            'loss': 0.0,
+            'config': config,
+        }, checkpoint_path)
+        print(f"  Initial checkpoint saved: {checkpoint_path}\n")
+    
     # Training loop
     if not use_distributed or local_rank == 0:
-        print("\nStarting training...\n")
+        print("Starting training...\n")
     
     for epoch in range(1, config['training']['num_epochs'] + 1):
         if use_distributed:

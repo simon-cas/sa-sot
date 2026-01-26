@@ -90,7 +90,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
             if line.strip():
                 samples.append(json.loads(line))
     
-    print(f"Evaluating {len(samples)} samples from {jsonl_path}")
+    total_samples_count = len(samples)
+    print(f"Evaluating {total_samples_count} samples from {jsonl_path}")
     
     total_cpwer = 0.0
     total_samples = 0
@@ -112,7 +113,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
     )
     
     with torch.no_grad():
-        for sample in tqdm(samples, desc="Evaluating"):
+        pbar = tqdm(samples, desc="Evaluating", total=len(samples))
+        for sample in pbar:
             try:
                 # Load audio
                 audio_path = Path(jsonl_path).parent / sample['mixed_wav']
@@ -191,6 +193,11 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                         # Get logits for the last position
                         last_logits = asr_logits[:, -1, :]  # (B, V)
                         
+                        # Debug: check logits distribution for first few steps
+                        if total_samples < 2 and step < 5:
+                            top_k_values, top_k_indices = torch.topk(last_logits[0], k=5)
+                            print(f"  Step {step}: top 5 tokens: {[(idx.item(), val.item(), tokenizer.id_to_piece(idx.item())) for idx, val in zip(top_k_indices, top_k_values)]}")
+                        
                         # Greedy decoding: select token with highest probability
                         next_token = last_logits.argmax(dim=-1)  # (B,)
                         next_token_id = next_token[0].item()
@@ -213,17 +220,40 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 # We need to split by <cc> tokens at token level, not by spaces in text
                 pred_tokens = token_preds[0].cpu().tolist()
                 
-                # Debug: print first 50 token IDs and their decoded pieces
-                if total_samples < 2:
-                    print(f"\nDebug - First 50 token IDs: {pred_tokens[:50]}")
-                    print(f"Debug - Decoded pieces:")
-                    for i, tok_id in enumerate(pred_tokens[:50]):
-                        piece = tokenizer.id_to_piece(tok_id)
-                        print(f"  [{i}] ID={tok_id}, piece='{piece}'")
+                # Get cc_id for speaker segmentation
+                cc_id = model.cc_id
+                
+                # Debug: print first sample for verification
+                if total_samples == 0:
+                    print(f"\nDebug - First sample prediction:")
+                    print(f"  Total tokens: {len(pred_tokens)}")
+                    print(f"  Token IDs (first 50): {pred_tokens[:50]}")
+                    print(f"  Token IDs (last 50): {pred_tokens[-50:]}")
+                    print(f"  <cc> token ID: {cc_id}")
+                    cc_count = sum(1 for t in pred_tokens if t == cc_id)
+                    print(f"  <cc> tokens found: {cc_count}")
+                    # Show token IDs around <cc> tokens
+                    if cc_count > 0:
+                        print(f"  Token IDs around <cc> tokens:")
+                        for i, tok_id in enumerate(pred_tokens):
+                            if tok_id == cc_id:
+                                start = max(0, i-3)
+                                end = min(len(pred_tokens), i+4)
+                                context = pred_tokens[start:end]
+                                print(f"    Position {i}: {context}")
                 
                 pred_segments = []
                 current_segment_tokens = []
-                cc_id = model.cc_id
+                
+                # Debug: print token pieces for first few samples
+                if total_samples < 3:
+                    print(f"\nDebug - Token analysis for sample {total_samples + 1}:")
+                    print(f"  Total tokens: {len(pred_tokens)}")
+                    print(f"  First 20 token IDs: {pred_tokens[:20]}")
+                    print(f"  First 20 token pieces: {[tokenizer.id_to_piece(t) for t in pred_tokens[:20]]}")
+                    vocab_size = tokenizer.get_vocab_size()
+                    print(f"  <cc> token ID: {cc_id}, piece: {tokenizer.id_to_piece(cc_id) if cc_id < vocab_size else 'N/A'}")
+                    print(f"  Vocab size: {vocab_size}")
                 
                 for tok_id in pred_tokens:
                     if tok_id == tokenizer.pad_id or tok_id == tokenizer.bos_id or tok_id == tokenizer.eos_id:
@@ -236,6 +266,14 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                             # Decode current segment tokens to text (BPE -> words)
                             segment_text = tokenizer.decode(current_segment_tokens)
                             pred_segments.append(segment_text.strip())
+                            
+                            # Debug: print segment details for first few samples
+                            if total_samples < 3:
+                                print(f"  Segment {len(pred_segments)}: {len(current_segment_tokens)} tokens")
+                                print(f"    Token IDs: {current_segment_tokens[:20]}{'...' if len(current_segment_tokens) > 20 else ''}")
+                                print(f"    Token pieces: {[tokenizer.id_to_piece(t) for t in current_segment_tokens[:20]]}{'...' if len(current_segment_tokens) > 20 else ''}")
+                                print(f"    Decoded text: '{segment_text.strip()}'")
+                            
                             current_segment_tokens = []
                     else:
                         # Regular token, add to current segment
@@ -246,6 +284,13 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                     # Decode current segment tokens to text (BPE -> words)
                     segment_text = tokenizer.decode(current_segment_tokens)
                     pred_segments.append(segment_text.strip())
+                    
+                    # Debug: print last segment details for first few samples
+                    if total_samples < 3:
+                        print(f"  Segment {len(pred_segments)} (last): {len(current_segment_tokens)} tokens")
+                        print(f"    Token IDs: {current_segment_tokens[:20]}{'...' if len(current_segment_tokens) > 20 else ''}")
+                        print(f"    Token pieces: {[tokenizer.id_to_piece(t) for t in current_segment_tokens[:20]]}{'...' if len(current_segment_tokens) > 20 else ''}")
+                        print(f"    Decoded text: '{segment_text.strip()}'")
                 
                 # Get reference text from 'texts' field (LibriSpeechMix format)
                 # texts is a list of transcriptions for each speaker
@@ -271,9 +316,13 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 if num_pred_speakers < num_ref_speakers:
                     # Pad with empty strings
                     pred_segments.extend([''] * (num_ref_speakers - num_pred_speakers))
+                    if total_samples < 2:
+                        print(f"  Warning: Only {num_pred_speakers} predicted segments, padding to {num_ref_speakers}")
                 elif num_pred_speakers > num_ref_speakers:
                     # Truncate to match reference
                     pred_segments = pred_segments[:num_ref_speakers]
+                    if total_samples < 2:
+                        print(f"  Warning: {num_pred_speakers} predicted segments, truncating to {num_ref_speakers}")
                 
                 # Compute cpWER following the standard procedure:
                 # 1. Concatenate all utterances of each speaker (ref_texts and pred_segments are already per-speaker)
@@ -281,25 +330,29 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 # 3. Pick the lowest WER
                 cpwer = compute_cpwer(ref_texts, pred_segments)
                 
-                # Debug: print first 2 samples
-                print(f"\n{'='*60}")
-                print(f"Sample {total_samples + 1}:")
-                print(f"  Reference texts ({len(ref_texts)} speakers):")
-                for i, ref in enumerate(ref_texts):
-                    print(f"    Speaker {i+1}: {ref}")
-                print(f"  Predicted segments ({len(pred_segments)} speakers):")
-                for i, pred in enumerate(pred_segments):
-                    print(f"    Speaker {i+1}: {pred}")
-                print(f"  cpWER: {cpwer:.4f} ({cpwer*100:.2f}%)")
-                print(f"{'='*60}")
+                # Print prediction results for each sample
+                print(f"\n{'='*80}")
+                print(f"Sample {total_samples + 1}/{total_samples_count}: cpWER = {cpwer:.4f} ({cpwer*100:.2f}%)")
+                print(f"{'-'*80}")
+                for spk_idx, (ref_text, pred_text) in enumerate(zip(ref_texts, pred_segments)):
+                    print(f"Speaker {spk_idx + 1}:")
+                    print(f"  Reference: {ref_text}")
+                    print(f"  Predicted: {pred_text}")
+                if len(pred_segments) > len(ref_texts):
+                    for spk_idx in range(len(ref_texts), len(pred_segments)):
+                        print(f"Speaker {spk_idx + 1} (extra):")
+                        print(f"  Predicted: {pred_segments[spk_idx]}")
+                print(f"{'='*80}")
                 
                 total_cpwer += cpwer
                 total_samples += 1
                 
-                # Exit after 2 samples for debugging
-                if total_samples >= 2:
-                    print(f"\nExiting after {total_samples} samples for debugging.")
-                    break
+                # Update progress bar with current and average cpWER
+                pbar.set_postfix({
+                    'cpWER': f'{cpwer*100:.1f}%',
+                    'avg_cpWER': f'{total_cpwer/total_samples*100:.1f}%',
+                    'samples': f'{total_samples}/{total_samples_count}'
+                })
                 
             except Exception as e:
                 print(f"Error processing sample: {e}")

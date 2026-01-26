@@ -45,6 +45,9 @@ def train_bpe_tokenizer(text_file, output_model_prefix, vocab_size=3730,
     print(f"  Character coverage: {character_coverage}")
     
     # SentencePiece training parameters
+    # Note: byte_fallback=True creates byte-level tokens (<0x00> to <0xFF>) for unknown characters
+    # These tokens have score=0 because they're rarely used, but they're necessary for robustness
+    # For English text, we can set byte_fallback=False to avoid these tokens and use more vocab for words
     spm.SentencePieceTrainer.train(
         input=text_file,
         model_prefix=output_model_prefix,
@@ -59,10 +62,12 @@ def train_bpe_tokenizer(text_file, output_model_prefix, vocab_size=3730,
         num_sub_iterations=2,
         max_sentence_length=4192,
         split_by_unicode_script=True,
-        split_by_whitespace=True,
+        split_by_whitespace=True,  # Split by whitespace (spaces become ▁ prefix)
         split_by_number=True,
-        treat_whitespace_as_suffix=False,
-        byte_fallback=True,  # Fallback to byte encoding for unknown characters
+        treat_whitespace_as_suffix=False,  # Whitespace becomes prefix (▁) not suffix
+        # For English text, byte_fallback can be False to save vocab space
+        # Set to True only if you need to handle rare/unknown characters
+        byte_fallback=False,  # Disable byte fallback for English (saves ~256 vocab slots)
         vocabulary_output_piece_score=True,
         hard_vocab_limit=True,
         use_all_vocab=False,
