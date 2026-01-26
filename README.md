@@ -2,6 +2,23 @@
 
 Unofficial PyTorch implementation of SA-SOT: Speaker-Aware Serialized Output Training for Multi-Talker ASR.
 
+## ⚠️ Work in Progress
+
+**This repository is currently under active development.**
+
+- ✅ Core model architecture implemented (SA-SOT with speaker-aware attention)
+- ✅ Training pipeline with masked t-SOT and speaker loss
+- ✅ Robust evaluation script with improved `<cc>` token splitting
+- 🔄 Model training and hyperparameter tuning in progress
+- 🔄 Evaluation metrics validation in progress
+
+**Known issues:**
+- Model requires sufficient training epochs to learn speaker separation
+- Early training checkpoints may show high cpWER (expected for untrained models)
+- Some edge cases in evaluation may need further refinement
+
+**Contributions and feedback are welcome!**
+
 ## Description
 
 This repository implements the SA-SOT model for multi-talker automatic speech recognition (ASR). SA-SOT extends Serialized Output Training (SOT) with speaker-aware mechanisms to better handle overlapped speech from multiple speakers.
