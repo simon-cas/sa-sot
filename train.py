@@ -164,7 +164,10 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
             asr_loss = masked_ce_loss(asr_logits, target_tokens, loss_mask)
         
         # Calculate Speaker loss
-        token_spk = output['token_spk']  # (B, N, D)
+        token_spk = output['token_spk']  # (B, N_cif, D)
+        # Get token_lens to ensure length matching
+        token_lens = output.get('token_lens', target_lens)  # (B,)
+        
         # speaker_ids is already in (B, N) format, each token corresponds to a speaker id
         # Filter out cc_id positions and invalid speaker IDs
         num_speakers = config['model']['num_speakers']
@@ -176,12 +179,40 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
         invalid_mask = (speaker_ids < 0) | (speaker_ids >= num_speakers) | (target_tokens == actual_model.cc_id)
         masked_speaker_ids[invalid_mask] = 0  # Set to first speaker as placeholder
         
-        # Only compute loss on valid tokens (not cc_id and valid speaker IDs)
-        valid_mask = ~invalid_mask
-        if valid_mask.sum() > 0:
-            # Flatten and filter
-            valid_token_spk = token_spk[valid_mask]  # (valid_tokens, D)
-            valid_speaker_ids = masked_speaker_ids[valid_mask]  # (valid_tokens,)
+        # Ensure token_spk and target_tokens/speaker_ids have matching lengths
+        # Truncate to minimum length for each sample in the batch
+        batch_size = token_spk.size(0)
+        max_token_len = token_spk.size(1)
+        max_target_len = target_tokens.size(1)
+        
+        # Process each sample separately to handle variable lengths
+        valid_token_spk_list = []
+        valid_speaker_ids_list = []
+        
+        for b in range(batch_size):
+            # Get actual lengths for this sample
+            actual_token_len = min(token_lens[b].item(), max_token_len)
+            actual_target_len = min(target_lens[b].item(), max_target_len)
+            actual_len = min(actual_token_len, actual_target_len)
+            actual_len = max(1, actual_len)  # Ensure at least 1
+            
+            # Truncate to actual_len
+            token_spk_b = token_spk[b, :actual_len, :]  # (actual_len, D)
+            target_tokens_b = target_tokens[b, :actual_len]  # (actual_len,)
+            speaker_ids_b = masked_speaker_ids[b, :actual_len]  # (actual_len,)
+            invalid_mask_b = invalid_mask[b, :actual_len]  # (actual_len,)
+            
+            # Create valid mask for this sample
+            valid_mask_b = ~invalid_mask_b
+            
+            if valid_mask_b.any():
+                valid_token_spk_list.append(token_spk_b[valid_mask_b])
+                valid_speaker_ids_list.append(speaker_ids_b[valid_mask_b])
+        
+        if len(valid_token_spk_list) > 0:
+            # Concatenate all valid tokens
+            valid_token_spk = torch.cat(valid_token_spk_list, dim=0)  # (total_valid_tokens, D)
+            valid_speaker_ids = torch.cat(valid_speaker_ids_list, dim=0)  # (total_valid_tokens,)
             
             # SpeakerAMSoftmax expects (B*N, D) and (B*N,)
             spk_loss = speaker_loss_fn(valid_token_spk.unsqueeze(0), valid_speaker_ids.unsqueeze(0))
