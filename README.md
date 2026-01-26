@@ -6,16 +6,30 @@ Unofficial PyTorch implementation of SA-SOT: Speaker-Aware Serialized Output Tra
 
 **This repository is currently under active development.**
 
-- ✅ Core model architecture implemented (SA-SOT with speaker-aware attention)
-- ✅ Training pipeline with masked t-SOT and speaker loss
-- ✅ Robust evaluation script with improved `<cc>` token splitting
-- 🔄 Model training and hyperparameter tuning in progress
-- 🔄 Evaluation metrics validation in progress
+### ✅ Implemented Components
+- ✅ **Speaker Embedding Branch**: ResNet18Half + Conformer layers for token-level speaker embeddings
+- ✅ **Speaker-Aware Self-Attention (SAA)**: Cosine similarity-based attention modification
+- ✅ **Speaker Embedding Fusion**: Integration into decoder input
+- ✅ **Masked t-SOT (SAT) Training**: Per-speaker decoder runs with masked inputs
+- ✅ **Multi-Loss Training**: ASR loss + Speaker classification loss
+- ✅ **Robust Evaluation**: Improved `<cc>` token splitting with fallback mechanisms
 
-**Known issues:**
-- Model requires sufficient training epochs to learn speaker separation
-- Early training checkpoints may show high cpWER (expected for untrained models)
-- Some edge cases in evaluation may need further refinement
+### 🔄 In Progress
+- 🔄 Model training and hyperparameter tuning
+- 🔄 Evaluation metrics validation
+- 🔄 Performance optimization
+
+### 📊 Current Status
+- Model architecture: **Complete** (all paper components implemented)
+- Training: **Functional** (loss decreasing, ~122M parameters)
+- Evaluation: **Improved** (robust speaker splitting logic)
+
+**Known limitations:**
+- Model requires sufficient training epochs (10+) to learn speaker separation
+- Early training checkpoints show high cpWER (expected for untrained models)
+- Hyperparameters may need tuning for optimal performance
+
+**See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed implementation status.**
 
 **Contributions and feedback are welcome!**
 
