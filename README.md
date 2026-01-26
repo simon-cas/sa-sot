@@ -29,8 +29,6 @@ Unofficial PyTorch implementation of SA-SOT: Speaker-Aware Serialized Output Tra
 - Early training checkpoints show high cpWER (expected for untrained models)
 - Hyperparameters may need tuning for optimal performance
 
-**See [IMPLEMENTATION_STATUS.md](IMPLEMENTATION_STATUS.md) for detailed implementation status.**
-
 **Contributions and feedback are welcome!**
 
 ## Description
