@@ -16,6 +16,56 @@ import editdistance
 from itertools import permutations
 
 
+def split_by_cc_robust(tokens, cc_id, min_tokens=1, min_cc_interval=0):
+    """
+    Robust speaker splitting by <cc> tokens with safety mechanisms.
+    
+    Design principles:
+    1. Consecutive <cc> tokens are treated as a single speaker change
+    2. Leading/trailing <cc> tokens are ignored
+    3. Minimum token count constraint (prevents empty speakers)
+    4. Fallback: if one speaker is empty, assign all tokens to speaker1
+    
+    Args:
+        tokens: List of token IDs
+        cc_id: Token ID for <cc>
+        min_tokens: Minimum tokens required per speaker (default: 1)
+        min_cc_interval: Minimum tokens between <cc> switches (default: 0, disabled)
+    
+    Returns:
+        spk1_tokens: List of token IDs for speaker 1
+        spk2_tokens: List of token IDs for speaker 2
+    """
+    spk = [[], []]
+    cur = 0
+    last_was_cc = True  # Treat BOS as cc to ignore leading cc
+    
+    for tok_id in tokens:
+        if tok_id == cc_id:
+            # Ignore consecutive cc
+            if last_was_cc:
+                continue
+            
+            # Check minimum interval constraint
+            if min_cc_interval > 0 and len(spk[cur]) < min_cc_interval:
+                continue
+            
+            # Switch speaker
+            cur = 1 - cur
+            last_was_cc = True
+        else:
+            spk[cur].append(tok_id)
+            last_was_cc = False
+    
+    # Post-processing / safety net
+    # If one speaker is empty or too short, fallback to all tokens in speaker1
+    if len(spk[0]) < min_tokens or len(spk[1]) < min_tokens:
+        # Fallback: all tokens to speaker1
+        return tokens, []
+    
+    return spk[0], spk[1]
+
+
 def compute_cpwer(ref_texts, hyp_texts):
     """
     Compute Character-level Word Error Rate (cpWER) for multi-speaker ASR
@@ -242,55 +292,67 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                                 context = pred_tokens[start:end]
                                 print(f"    Position {i}: {context}")
                 
-                pred_segments = []
-                current_segment_tokens = []
+                # Filter out special tokens first
+                filtered_tokens = []
+                for tok_id in pred_tokens:
+                    if tok_id in [tokenizer.pad_id, tokenizer.bos_id, tokenizer.eos_id, tokenizer.mask_id]:
+                        continue
+                    filtered_tokens.append(tok_id)
                 
-                # Debug: print token pieces for first few samples
+                # Debug: print token analysis for first few samples
                 if total_samples < 3:
                     print(f"\nDebug - Token analysis for sample {total_samples + 1}:")
-                    print(f"  Total tokens: {len(pred_tokens)}")
-                    print(f"  First 20 token IDs: {pred_tokens[:20]}")
-                    print(f"  First 20 token pieces: {[tokenizer.id_to_piece(t) for t in pred_tokens[:20]]}")
+                    print(f"  Total tokens (after filtering): {len(filtered_tokens)}")
+                    print(f"  First 20 token IDs: {filtered_tokens[:20]}")
+                    print(f"  First 20 token pieces: {[tokenizer.id_to_piece(t) for t in filtered_tokens[:20]]}")
                     vocab_size = tokenizer.get_vocab_size()
                     print(f"  <cc> token ID: {cc_id}, piece: {tokenizer.id_to_piece(cc_id) if cc_id < vocab_size else 'N/A'}")
-                    print(f"  Vocab size: {vocab_size}")
-                
-                for tok_id in pred_tokens:
-                    if tok_id == tokenizer.pad_id or tok_id == tokenizer.bos_id or tok_id == tokenizer.eos_id:
-                        continue
-                    elif tok_id == tokenizer.mask_id:
-                        continue
-                    elif tok_id == cc_id:
-                        # <cc> marks speaker change, decode current segment and start new one
-                        if current_segment_tokens:
-                            # Decode current segment tokens to text (BPE -> words)
-                            segment_text = tokenizer.decode(current_segment_tokens)
-                            pred_segments.append(segment_text.strip())
-                            
-                            # Debug: print segment details for first few samples
-                            if total_samples < 3:
-                                print(f"  Segment {len(pred_segments)}: {len(current_segment_tokens)} tokens")
-                                print(f"    Token IDs: {current_segment_tokens[:20]}{'...' if len(current_segment_tokens) > 20 else ''}")
-                                print(f"    Token pieces: {[tokenizer.id_to_piece(t) for t in current_segment_tokens[:20]]}{'...' if len(current_segment_tokens) > 20 else ''}")
-                                print(f"    Decoded text: '{segment_text.strip()}'")
-                            
-                            current_segment_tokens = []
-                    else:
-                        # Regular token, add to current segment
-                        current_segment_tokens.append(tok_id)
-                
-                # Don't forget the last segment (if no <cc> at the end)
-                if current_segment_tokens:
-                    # Decode current segment tokens to text (BPE -> words)
-                    segment_text = tokenizer.decode(current_segment_tokens)
-                    pred_segments.append(segment_text.strip())
+                    cc_count = sum(1 for t in filtered_tokens if t == cc_id)
+                    print(f"  <cc> tokens found: {cc_count} ({cc_count/len(filtered_tokens)*100:.1f}% if len(filtered_tokens) > 0 else 0%)")
                     
-                    # Debug: print last segment details for first few samples
+                    # Print raw hypothesis (with <cc> tokens visible) for sanity check
+                    raw_hyp_pieces = [tokenizer.id_to_piece(t) for t in filtered_tokens]
+                    raw_hyp_text = ' '.join(raw_hyp_pieces[:50])  # First 50 tokens
+                    print(f"  Raw hypothesis (first 50 tokens): {raw_hyp_text}{'...' if len(filtered_tokens) > 50 else ''}")
+                    
+                    # Print full decoded text without speaker splitting
+                    full_text = tokenizer.decode(filtered_tokens).strip()
+                    print(f"  Full decoded text (no split): '{full_text[:200]}{'...' if len(full_text) > 200 else ''}'")
+                
+                # Robust speaker splitting with safety mechanisms
+                spk1_tokens, spk2_tokens = split_by_cc_robust(
+                    filtered_tokens, 
+                    cc_id, 
+                    min_tokens=1,  # Minimum 1 token per speaker
+                    min_cc_interval=0  # No minimum interval (can adjust if needed)
+                )
+                
+                # Check for pathological case: too many <cc> tokens
+                cc_ratio = sum(1 for t in filtered_tokens if t == cc_id) / len(filtered_tokens) if len(filtered_tokens) > 0 else 0
+                if cc_ratio > 0.3:
                     if total_samples < 3:
-                        print(f"  Segment {len(pred_segments)} (last): {len(current_segment_tokens)} tokens")
-                        print(f"    Token IDs: {current_segment_tokens[:20]}{'...' if len(current_segment_tokens) > 20 else ''}")
-                        print(f"    Token pieces: {[tokenizer.id_to_piece(t) for t in current_segment_tokens[:20]]}{'...' if len(current_segment_tokens) > 20 else ''}")
-                        print(f"    Decoded text: '{segment_text.strip()}'")
+                        print(f"  Warning: High <cc> ratio ({cc_ratio:.2%}), decoding may be unreliable")
+                    # Fallback: all tokens to speaker1
+                    spk1_tokens, spk2_tokens = filtered_tokens, []
+                
+                # Decode speaker segments
+                pred_segments = []
+                if spk1_tokens:
+                    spk1_text = tokenizer.decode(spk1_tokens).strip()
+                    pred_segments.append(spk1_text)
+                else:
+                    pred_segments.append("")
+                
+                if spk2_tokens:
+                    spk2_text = tokenizer.decode(spk2_tokens).strip()
+                    pred_segments.append(spk2_text)
+                else:
+                    pred_segments.append("")
+                
+                # Debug: print segment details for first few samples
+                if total_samples < 3:
+                    print(f"  Speaker 1: {len(spk1_tokens)} tokens -> '{pred_segments[0][:100]}{'...' if len(pred_segments[0]) > 100 else ''}'")
+                    print(f"  Speaker 2: {len(spk2_tokens)} tokens -> '{pred_segments[1][:100]}{'...' if len(pred_segments[1]) > 100 else ''}'")
                 
                 # Get reference text from 'texts' field (LibriSpeechMix format)
                 # texts is a list of transcriptions for each speaker
@@ -310,19 +372,23 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 # that minimizes the character-level edit distance
                 # This handles the case where model output order might differ from reference order
                 num_ref_speakers = len(ref_texts)
-                num_pred_speakers = len(pred_segments)
                 
-                # If number of speakers don't match, pad or truncate
-                if num_pred_speakers < num_ref_speakers:
-                    # Pad with empty strings
-                    pred_segments.extend([''] * (num_ref_speakers - num_pred_speakers))
+                # Ensure pred_segments has exactly 2 elements (speaker1, speaker2)
+                # This is guaranteed by split_by_cc_robust, but add safety check
+                while len(pred_segments) < 2:
+                    pred_segments.append("")
+                
+                # For 2-speaker case, use first 2 segments
+                if num_ref_speakers == 2:
+                    pred_segments = pred_segments[:2]
+                elif num_ref_speakers > 2:
+                    # Pad with empty strings if more than 2 speakers
+                    pred_segments.extend([''] * (num_ref_speakers - len(pred_segments)))
                     if total_samples < 2:
-                        print(f"  Warning: Only {num_pred_speakers} predicted segments, padding to {num_ref_speakers}")
-                elif num_pred_speakers > num_ref_speakers:
-                    # Truncate to match reference
-                    pred_segments = pred_segments[:num_ref_speakers]
-                    if total_samples < 2:
-                        print(f"  Warning: {num_pred_speakers} predicted segments, truncating to {num_ref_speakers}")
+                        print(f"  Warning: Reference has {num_ref_speakers} speakers, padding predictions")
+                else:
+                    # Single speaker case: use first segment only
+                    pred_segments = [pred_segments[0]] if pred_segments else [""]
                 
                 # Compute cpWER following the standard procedure:
                 # 1. Concatenate all utterances of each speaker (ref_texts and pred_segments are already per-speaker)
