@@ -196,8 +196,12 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
             actual_len = min(actual_token_len, actual_target_len)
             actual_len = max(1, actual_len)  # Ensure at least 1
             
-            # Truncate to actual_len
+            # Truncate all tensors to actual_len to ensure they match
+            # token_spk is (B, max_token_len, D)
             token_spk_b = token_spk[b, :actual_len, :]  # (actual_len, D)
+            # target_tokens, speaker_ids, and invalid_mask are (B, max_target_len)
+            # Since actual_len = min(actual_token_len, actual_target_len) <= max_target_len,
+            # we can safely index up to actual_len
             target_tokens_b = target_tokens[b, :actual_len]  # (actual_len,)
             speaker_ids_b = masked_speaker_ids[b, :actual_len]  # (actual_len,)
             invalid_mask_b = invalid_mask[b, :actual_len]  # (actual_len,)
@@ -217,6 +221,8 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
             # SpeakerAMSoftmax expects (B*N, D) and (B*N,)
             spk_loss = speaker_loss_fn(valid_token_spk.unsqueeze(0), valid_speaker_ids.unsqueeze(0))
         else:
+            # No valid tokens for speaker loss (all tokens are cc_id or invalid speaker_ids)
+            # This can happen in some batches, but should be rare
             spk_loss = torch.tensor(0.0, device=device)
         
         # Total loss

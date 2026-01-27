@@ -20,7 +20,7 @@ training:
   
   # Loss weights
   asr_loss_weight: 1.0
-  speaker_loss_weight: 0.1
+  speaker_loss_weight: 0.2  # Increased from 0.1 to give more gradient signal for speaker learning
 
 # Data parameters
 data:

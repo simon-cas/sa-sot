@@ -9,8 +9,8 @@ class AMSoftmaxLoss(nn.Module):
     """
     def __init__(self, embed_dim, num_classes, s=30.0, m=0.2):
         super().__init__()
-        self.s = s
-        self.m = m
+        self.s = s  # Scale factor (default 30.0, typical range: 10-64)
+        self.m = m  # Margin (default 0.2, typical range: 0.1-0.5)
         self.weight = nn.Parameter(torch.randn(num_classes, embed_dim))
         nn.init.xavier_uniform_(self.weight)
 
