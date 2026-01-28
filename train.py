@@ -92,6 +92,11 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
     total_spk_loss = 0.0
     num_batches = 0
     
+    # Debug <cc>: print every N batches (only rank 0)
+    debug_cc = config.get('training', {}).get('debug_cc', False)
+    debug_cc_interval = config.get('training', {}).get('debug_cc_interval', 100)
+    is_rank0 = not (torch.distributed.is_initialized() and torch.distributed.get_rank() != 0)
+    
     pbar = tqdm(dataloader, desc="Training")
     for batch_idx, batch in enumerate(pbar):
         # Move to device
@@ -142,12 +147,12 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
                 batch_logits = logits  # (1, actual_len, V) - already truncated in model
                 batch_speaker_ids = speaker_ids[b:b+1, :actual_len]  # (1, actual_len)
                 
-                # mask: True for tokens belonging to current speaker (and not cc_id)
-                # Handle DDP wrapped model
+                # mask: True for (1) tokens belonging to current speaker, OR (2) positions where target is <cc>.
+                # We MUST include <cc> in the loss so the model learns to predict speaker change;
+                # otherwise it never outputs <cc> and speaker2 stays empty at inference.
                 actual_model = model.module if hasattr(model, 'module') else model
-                mask_id = actual_model.mask_id
                 cc_id = actual_model.cc_id
-                loss_mask = (batch_speaker_ids == spk) & (batch_target != cc_id)
+                loss_mask = (batch_speaker_ids == spk) | (batch_target == cc_id)
                 
                 if loss_mask.any():
                     loss = masked_ce_loss(batch_logits, batch_target, loss_mask)
@@ -237,6 +242,59 @@ def train_epoch(model, dataloader, optimizer, device, vocab_size, num_speakers, 
         torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=grad_clip)
         optimizer.step()
         
+        # ----- Debug <cc>: every N batches, print full predictions (rank 0 only) -----
+        # Do this AFTER backward/step to avoid interfering with gradient computation
+        if debug_cc and debug_cc_interval > 0 and is_rank0 and (batch_idx % debug_cc_interval == 0):
+            actual_model = model.module if hasattr(model, 'module') else model
+            cc_id = actual_model.cc_id
+            
+            # Load tokenizer for decoding (only when needed)
+            from data.tokenizer import BPETokenizer
+            tokenizer_config = config.get('tokenizer', {})
+            tokenizer_path = tokenizer_config.get('model_path')
+            tokenizer = None
+            if tokenizer_path and os.path.exists(tokenizer_path):
+                tokenizer = BPETokenizer(tokenizer_path)
+            
+            # Full forward (no SAT) to get predictions on same batch - use eval mode temporarily
+            model.eval()
+            with torch.no_grad():
+                # Clone inputs to avoid any inplace modifications
+                feats_clone = feats.clone().detach()
+                prev_tokens_clone = prev_tokens.clone().detach()
+                out_full = model(feats_clone, feat_lens, prev_tokens_clone, target_len=target_lens, speaker_ids=None, return_intermediate=True)
+                full_logits = out_full['asr_logits']  # (B, N, V)
+            model.train()  # Restore training mode
+            pred_tokens = full_logits.argmax(dim=-1)
+            
+            # Print predictions for first sample in batch
+            b = 0
+            L_target = target_lens[b].item()
+            L_pred = min(L_target, pred_tokens.size(1))
+            
+            target_seq = target_tokens[b, :L_target].cpu().tolist()
+            pred_seq = pred_tokens[b, :L_pred].cpu().tolist()
+            
+            # Count <cc>
+            n_cc_target = sum(1 for t in target_seq if t == cc_id)
+            n_cc_pred = sum(1 for t in pred_seq if t == cc_id)
+            
+            # Decode to text if tokenizer available
+            if tokenizer:
+                target_text = tokenizer.decode(target_seq)
+                pred_text = tokenizer.decode(pred_seq)
+                # Also show token pieces for first/last 20 tokens
+                target_pieces = [tokenizer.id_to_piece(t) for t in target_seq[:20]]
+                pred_pieces = [tokenizer.id_to_piece(t) for t in pred_seq[:20]]
+                pbar.write(f"[DEBUG_CC] batch {batch_idx}, sample 0:")
+                pbar.write(f"  Target: cc={n_cc_target}/{L_target}, tokens[:20]={target_pieces}, text[:100]='{target_text[:100]}...'")
+                pbar.write(f"  Pred:   cc={n_cc_pred}/{L_pred}, tokens[:20]={pred_pieces}, text[:100]='{pred_text[:100]}...'")
+            else:
+                # Fallback: just show token IDs
+                pbar.write(f"[DEBUG_CC] batch {batch_idx}, sample 0:")
+                pbar.write(f"  Target: cc={n_cc_target}/{L_target}, token_ids[:30]={target_seq[:30]}")
+                pbar.write(f"  Pred:   cc={n_cc_pred}/{L_pred}, token_ids[:30]={pred_seq[:30]}")
+        
         # Accumulate losses
         total_loss += total_loss_batch.item()
         total_asr_loss += asr_loss.item()
@@ -275,6 +333,10 @@ def main():
                        help='Path to checkpoint to resume training from')
     parser.add_argument('--reset', action='store_true', default=False,
                        help='Reset training: remove old checkpoints and start fresh')
+    parser.add_argument('--debug_cc', action='store_true', default=False,
+                       help='Debug <cc>: print target vs pred cc counts every N batches')
+    parser.add_argument('--debug_cc_interval', type=int, default=100,
+                       help='Print debug_cc every this many batches (default: 100)')
     args = parser.parse_args()
     
     # Set random seed
@@ -291,6 +353,10 @@ def main():
         config['data']['train_manifest'] = args.train_manifest
     if args.exp_dir:
         config['training']['save_dir'] = args.exp_dir
+    if 'training' not in config:
+        config['training'] = {}
+    config['training']['debug_cc'] = args.debug_cc
+    config['training']['debug_cc_interval'] = args.debug_cc_interval
     
     # Check for distributed training
     use_distributed = False

@@ -168,7 +168,9 @@ if [ ${stage} -le 6 ] && [ ${stop_stage} -ge 6 ]; then
     $PYTHON_CMD -m torch.distributed.run --nproc_per_node=$num_gpu train.py --config $config $use_mix_flag $reset_flag \
              --seed 1234 \
              --train_manifest $train_manifest \
-             --exp_dir $exp_dir
+             --exp_dir $exp_dir \
+             #--debug_cc \
+             #--debug_cc_interval 10
   fi
 fi
 

@@ -113,7 +113,7 @@ def compute_cpwer(ref_texts, hyp_texts):
     return min_cpwer
 
 
-def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
+def evaluate_jsonl(jsonl_path, model, tokenizer, device, config, debug_cc=False):
     """
     Evaluate model on LibriSpeechMix format JSONL file
     
@@ -123,6 +123,7 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
         tokenizer: BPE tokenizer
         device: Device to use
         config: Configuration dict
+        debug_cc: If True, print <cc> stats per sample and periodic summary
     
     Returns:
         avg_cpwer: Average cpWER across all samples
@@ -142,6 +143,8 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
     
     total_samples_count = len(samples)
     print(f"Evaluating {total_samples_count} samples from {jsonl_path}")
+    if debug_cc:
+        print("[DEBUG_CC] On: will print first 5 samples in detail and every 50 samples: pred cc=, len=, spk2_empty=")
     
     total_cpwer = 0.0
     total_samples = 0
@@ -273,17 +276,16 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                 # Get cc_id for speaker segmentation
                 cc_id = model.cc_id
                 
-                # Debug: print first sample for verification
-                if total_samples == 0:
-                    print(f"\nDebug - First sample prediction:")
+                # Debug <cc>: print first sample(s) for verification
+                cc_count_raw = sum(1 for t in pred_tokens if t == cc_id)
+                if debug_cc and total_samples == 0:
+                    print(f"\n[DEBUG_CC] First sample prediction:")
                     print(f"  Total tokens: {len(pred_tokens)}")
                     print(f"  Token IDs (first 50): {pred_tokens[:50]}")
                     print(f"  Token IDs (last 50): {pred_tokens[-50:]}")
                     print(f"  <cc> token ID: {cc_id}")
-                    cc_count = sum(1 for t in pred_tokens if t == cc_id)
-                    print(f"  <cc> tokens found: {cc_count}")
-                    # Show token IDs around <cc> tokens
-                    if cc_count > 0:
+                    print(f"  <cc> tokens found: {cc_count_raw}")
+                    if cc_count_raw > 0:
                         print(f"  Token IDs around <cc> tokens:")
                         for i, tok_id in enumerate(pred_tokens):
                             if tok_id == cc_id:
@@ -299,24 +301,22 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                         continue
                     filtered_tokens.append(tok_id)
                 
-                # Debug: print token analysis for first few samples
-                if total_samples < 3:
-                    print(f"\nDebug - Token analysis for sample {total_samples + 1}:")
+                # Debug <cc>: print token analysis for first few samples
+                cc_count = sum(1 for t in filtered_tokens if t == cc_id)
+                if debug_cc and total_samples < 5:
+                    print(f"\n[DEBUG_CC] Token analysis for sample {total_samples + 1}:")
                     print(f"  Total tokens (after filtering): {len(filtered_tokens)}")
                     print(f"  First 20 token IDs: {filtered_tokens[:20]}")
                     print(f"  First 20 token pieces: {[tokenizer.id_to_piece(t) for t in filtered_tokens[:20]]}")
                     vocab_size = tokenizer.get_vocab_size()
                     print(f"  <cc> token ID: {cc_id}, piece: {tokenizer.id_to_piece(cc_id) if cc_id < vocab_size else 'N/A'}")
-                    cc_count = sum(1 for t in filtered_tokens if t == cc_id)
                     cc_ratio = (cc_count/len(filtered_tokens)*100) if len(filtered_tokens) > 0 else 0.0
                     print(f"  <cc> tokens found: {cc_count} ({cc_ratio:.1f}%)")
                     
-                    # Print raw hypothesis (with <cc> tokens visible) for sanity check
                     raw_hyp_pieces = [tokenizer.id_to_piece(t) for t in filtered_tokens]
-                    raw_hyp_text = ' '.join(raw_hyp_pieces[:50])  # First 50 tokens
+                    raw_hyp_text = ' '.join(raw_hyp_pieces[:50])
                     print(f"  Raw hypothesis (first 50 tokens): {raw_hyp_text}{'...' if len(filtered_tokens) > 50 else ''}")
                     
-                    # Print full decoded text without speaker splitting
                     full_text = tokenizer.decode(filtered_tokens).strip()
                     print(f"  Full decoded text (no split): '{full_text[:200]}{'...' if len(full_text) > 200 else ''}'")
                 
@@ -327,6 +327,10 @@ def evaluate_jsonl(jsonl_path, model, tokenizer, device, config):
                     min_tokens=1,  # Minimum 1 token per speaker
                     min_cc_interval=0  # No minimum interval (can adjust if needed)
                 )
+                
+                # Debug <cc>: periodic one-line summary (every 50 samples)
+                if debug_cc and (total_samples + 1) % 50 == 0:
+                    print(f"[DEBUG_CC] sample {total_samples + 1}: pred cc={cc_count}, len={len(filtered_tokens)}, spk2_empty={len(spk2_tokens) == 0}")
                 
                 # Check for pathological case: too many <cc> tokens
                 cc_ratio = (sum(1 for t in filtered_tokens if t == cc_id) / len(filtered_tokens)) if len(filtered_tokens) > 0 else 0.0
@@ -444,6 +448,8 @@ def main():
                        help='Path to config file')
     parser.add_argument('--device', type=str, default='cuda',
                        help='Device to use (cuda/cpu)')
+    parser.add_argument('--debug_cc', action='store_true', default=False,
+                       help='Print <cc> stats: per-sample cc count and periodic summary')
     args = parser.parse_args()
     
     import yaml
@@ -481,8 +487,8 @@ def main():
     model.eval()
     
     # Evaluate
-    print(f"Evaluating on {args.jsonl}")
-    avg_cpwer = evaluate_jsonl(args.jsonl, model, tokenizer, device, config)
+    print(f"Evaluating on {args.jsonl}" + (" [DEBUG_CC on]" if args.debug_cc else ""))
+    avg_cpwer = evaluate_jsonl(args.jsonl, model, tokenizer, device, config, debug_cc=args.debug_cc)
     
     if avg_cpwer is not None:
         print(f"\n{'='*60}")
